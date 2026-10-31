@@ -552,6 +552,7 @@ body.dark .chat-date-divider { background: rgba(0,0,0,0.5); color: #aaa; }
 <script>
 // ====== 全局通知弹窗函数 ======
 // type: 'chat' | 'co-invite' | 'listen-invite' | 'moment' | 'moment-comment' | 'letter' | 'call'
+// ====== 全局通知弹窗函数 ======
 function showTopNotification(title, desc, avatar, onClick, type) {
   let cont = document.getElementById('notificationContainer');
   if (!cont) {
@@ -559,15 +560,14 @@ function showTopNotification(title, desc, avatar, onClick, type) {
     cont.id = 'notificationContainer';
     document.body.appendChild(cont);
   }
+  
+  // 【关键修复】每次清空旧通知，实现覆盖效果
+  cont.innerHTML = '';
+
   const typeLabel = ({
-    'chat': '消息',
-    'co-invite': '共读邀请',
-    'listen-invite': '一起听',
-    'moment': '朋友圈',
-    'moment-comment': '评论',
-    'moment-reply': '回复',
-    'letter': '信件',
-    'call': '来电'
+    'chat': '消息', 'co-invite': '共读邀请', 'listen-invite': '一起听',
+    'moment': '朋友圈', 'moment-comment': '评论', 'moment-reply': '回复',
+    'letter': '信件', 'call': '来电'
   })[type] || '';
 
   const div = document.createElement('div');
@@ -579,21 +579,55 @@ function showTopNotification(title, desc, avatar, onClick, type) {
       <div class="tn-desc">${esc(desc)}</div>
     </div>
   `;
+  
+  let isRemoved = false;
+  const removeDiv = () => {
+    if (isRemoved) return;
+    isRemoved = true;
+    div.classList.remove('show');
+    setTimeout(() => { if(div.parentNode) div.remove(); }, 300);
+  };
+
   div.onclick = () => {
     if(onClick) onClick();
-    div.classList.remove('show');
-    setTimeout(() => div.remove(), 300);
+    removeDiv();
   };
+
+  // 【新增功能】添加触摸滑动取消
+  let startY = 0;
+  div.addEventListener('touchstart', e => {
+    startY = e.touches[0].clientY;
+    div.style.transition = 'none';
+  }, {passive: true});
+  
+  div.addEventListener('touchmove', e => {
+    const dy = e.touches[0].clientY - startY;
+    if (dy < 0) { // 向上滑动
+      div.style.transform = `translateY(${dy}px)`;
+    }
+  }, {passive: true});
+  
+   div.addEventListener('touchend', e => {
+    const dy = e.changedTouches[0].clientY - startY;
+    div.style.transition = 'all 0.3s cubic-bezier(0.2,0.8,0.2,1)';
+    if (dy < -30) { // 上滑超过30px则关闭
+      div.style.transform = 'translateY(-120%)';
+      div.style.opacity = '0';
+      div.style.pointerEvents = 'none'; // 防止透明后还能点到
+      setTimeout(() => { if(div.parentNode) div.remove(); }, 300);
+    } else {
+      div.style.transform = '';
+      div.style.opacity = '';
+    }
+  });
+
   cont.appendChild(div);
   requestAnimationFrame(() => div.classList.add('show'));
+  
   setTimeout(() => {
-    if(div.parentNode) {
-      div.classList.remove('show');
-      setTimeout(() => div.remove(), 300);
-    }
+    if (div.parentNode) removeDiv();
   }, 5000);
 }
-
 // ====== 轻提示（替代 alert） ======
 function showToast(msg) {
   const div = document.createElement('div');
@@ -1794,7 +1828,16 @@ function meView(){
   <div class="card-box"><h3>我的昵称</h3><label>联系人在聊天里 @ 你时显示的昵称<input id="me-name" value="${esc(db.me.name)}"></label></div>
     <div class="card-box"><h3>我的头像</h3><div class="imgpick"><img id="pv-me-avatar" src="${esc(db.me.avatar)}" style="${db.me.avatar?'':'display:none'}"><label style="padding:6px 12px;background:var(--primary-light);color:var(--primary);border-radius:8px;cursor:pointer;font-size:12px">选择图片<input type="file" accept="image/*" data-me-avatar-crop class="hidden-file"></label></div></div>
 
-        <div class="card-box"><h3>我的自定义气泡</h3>
+          <div class="card-box"><h3>气泡显示模式</h3>
+      <div class="decide-row" style="padding-top:0; border:none">
+        <span>选择样式</span>
+        <div class="chips" style="margin:0">
+          <button class="chip ${(db.me.bubbleStyle||'default')!=='custom'?'active':''}" data-action="set-me-bubble-style" data-style="default">纯色气泡</button>
+          <button class="chip ${db.me.bubbleStyle==='custom'?'active':''}" data-action="set-me-bubble-style" data-style="custom">自定义CSS</button>
+        </div>
+      </div>
+    </div>
+  <div class="card-box"><h3>我的自定义气泡</h3>
       <p style="font-size:11px;color:#bbb;margin:0 0 8px;line-height:1.6">上传 CSS 文件，作用于我在<b>所有聊天</b>中发出的气泡。CSS 里写 <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px">.bubble</code> 表示气泡本体；<code style="background:#f5f5f5;padding:1px 5px;border-radius:3px">.message</code> 会自动换成 <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px">.msg</code>。</p>
       <textarea id="me-bubble-css" placeholder="直接粘贴你的 CSS 样式表……" style="width:100%;min-height:180px;padding:10px;border:1px solid #eee;border-radius:8px;font-size:12px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;background:#fafafa">${esc(db.me.bubbleCss||'')}</textarea>
       <div style="display:flex;gap:8px;margin-top:8px">
@@ -1863,9 +1906,10 @@ function rgbToHex(r,g,b){ const h = x => Math.max(0,Math.min(255,Math.round(x)))
 function mixColors(c1, c2, t){ const a=hexToRgb(c1),b=hexToRgb(c2); return rgbToHex(a.r*(1-t)+b.r*t, a.g*(1-t)+b.g*t, a.b*(1-t)+b.b*t); }
 function lighten(hex, t){ return mixColors(hex, '#ffffff', t); }
 function darken(hex, t){ return mixColors(hex, '#000000', t); }
-
 function normalizeBubbleCss(css){
-  return String(css||'').replace(/\.message\b/g, '.msg');
+  return String(css||'')
+    .replace(/\.message\b/g, '.msg')
+    .replace(/(^|,|\s)\.msg(\.mine|:not\(\.mine\))?\s+/g, '$1'); 
 }
 function scopeCss(css, scope){
   css = normalizeBubbleCss(css).replace(/\/\*[\s\S]*?\*\//g, '');
@@ -1915,7 +1959,8 @@ function applyAppearance(){
   el.textContent = `
     ${fontCss}
     :root{ --primary:${primary}; --primary-light:${primaryLight}; --bg:${bg}; --card:${card}; --text:${text}; --text-light:${textLight}; --border:${border}; }
-    body{background:${bg};color:${text};font-family:${fontFamily};}
+        body{background:${bg};color:${text};}
+    body, input, textarea, button, select, .bubble, .msg { font-family: ${fontFamily} !important; }
     .bubble{border-radius:${radius}px;font-size:${fontSize}px;}
     .bubble .kaomoji{font-size:${fontSize}px;}
     .bubble .emoji{font-size:${Math.round(fontSize*2)}px;}
@@ -1930,10 +1975,16 @@ function applyAppearance(){
   `;
 
    let customBubbleCss = '';
-  if(db.me.bubbleCss && db.me.bubbleCss.trim()) customBubbleCss += '\n/* 我的气泡（所有聊天） */\n' + scopeCss(db.me.bubbleCss, '.msg.mine');
+  if(db.me.bubbleStyle === 'custom' && db.me.bubbleCss && db.me.bubbleCss.trim()) {
+    customBubbleCss += '\n/* 我的气泡（所有聊天） */\n' + scopeCss(db.me.bubbleCss, '.msg.mine');
+  }
   db.contacts.forEach(c => {
-    if(c.bubbleCss && c.bubbleCss.trim()) customBubbleCss += `\n/* ${c.name} 的气泡 */\n` + scopeCss(c.bubbleCss, `[data-chat-key="contact:${c.id}"] .msg:not(.mine)`);
-    if(c.myBubbleCss && c.myBubbleCss.trim()) customBubbleCss += `\n/* 我在与 ${c.name} 聊天中的气泡 */\n` + scopeCss(c.myBubbleCss, `[data-chat-key="contact:${c.id}"] .msg.mine`);
+    if(c.bubbleStyle === 'custom' && c.bubbleCss && c.bubbleCss.trim()) {
+      customBubbleCss += `\n/* ${c.name} 的气泡 */\n` + scopeCss(c.bubbleCss, `[data-chat-key="contact:${c.id}"] .msg:not(.mine)`);
+    }
+    if(c.myBubbleCss && c.myBubbleCss.trim()) {
+      customBubbleCss += `\n/* 我在与 ${c.name} 聊天中的气泡 */\n` + scopeCss(c.myBubbleCss, `[data-chat-key="contact:${c.id}"] .msg.mine`);
+    }
   });
   let cbEl = document.getElementById('customBubbleStyle');
   if(!cbEl){ cbEl = document.createElement('style'); cbEl.id = 'customBubbleStyle'; document.head.appendChild(cbEl); }
@@ -2204,14 +2255,19 @@ function msgHtml(m,isGroup,ent){
     name=c.name||'未知'; avatar=c.avatar||''; color=c.bubbleColor||'#ffffff';
   }
 
-  const textColor = isLight(color)?'#111':'#fff';
+   const textColor = isLight(color)?'#111':'#fff';
   const key = ui.open ? (ui.open.type + ':' + ui.open.id) : '';
   const allMsgs = db.chats[key] || [];
   const isRead = mine && allMsgs.some(x => x.t > m.t && x.from !== 'me' && x.type !== 'system');
 
-   let bubbleStyle = `background:${esc(color)};color:${textColor};`;
-  let bubbleColorVar = color;
-  // 自定义气泡统一走 CSS（applyAppearance 注入），不再使用图片气泡
+  let bubbleStyle = '';
+  const isCustom = mine ? (db.me.bubbleStyle === 'custom') : (c.bubbleStyle === 'custom');
+  
+  if (isCustom) {
+    bubbleStyle = `--bubble-color:${esc(color)};`;
+  } else {
+    bubbleStyle = `background:${esc(color)};color:${textColor};`;
+  }
 
   const timeHtml = `<div class="msg-time">${fmtTimeOnly(m.t)}${isRead ? ' <span style="color:#999;font-size:10px;">已读</span>' : ''}</div>`;
   let quoteBlock = '';
@@ -2242,17 +2298,17 @@ function msgHtml(m,isGroup,ent){
     emotionHtml = `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed ${borderCol};display:flex;flex-wrap:wrap;gap:8px;">${tags}</div>`;
   }
   const atBadge = m.atMe ? `<span style="font-size:10px;background:var(--primary);color:#fff;border-radius:6px;padding:2px 6px;margin-left:6px;">@你</span>` : '';
+  
   return `<div class="msg ${mine?'mine':''}" data-msg-id="${m.id}">
     <div class="m-avatar">${avatarHtml(avatar,name)}</div>
     <div class="m-body">
       ${isGroup&&!mine?`<div class="m-name">${esc(name)}${atBadge}</div>`:''}
       ${quoteBlock}
-      <div class="bubble" style="${bubbleStyle};--bubble-color:${esc(bubbleColorVar)}">${body}${imgsBlock}${emotionHtml}</div>
+      <div class="bubble" style="${bubbleStyle}">${body}${imgsBlock}${emotionHtml}</div>
       ${timeHtml}
     </div>
   </div>`;
 }
-
 /* ====== 字卡抽取 ====== */
 function pickCards(contactId, n, ratio={text:20,kaomoji:20,emoji:20,image:40}, opts={}){
   const pool = db.cards.filter(c=>contactUsable(c, contactId));
@@ -3639,6 +3695,15 @@ function basicTab(c){
     </div>
   </div>
 
+  <div class="card-box"><h3>TA 的气泡显示模式</h3>
+    <div class="decide-row" style="padding-top:0; border:none">
+      <span>选择样式</span>
+      <div class="chips" style="margin:0">
+        <button class="chip ${(c.bubbleStyle||'default')!=='custom'?'active':''}" data-action="set-contact-bubble-style" data-style="default">纯色气泡</button>
+        <button class="chip ${c.bubbleStyle==='custom'?'active':''}" data-action="set-contact-bubble-style" data-style="custom">自定义CSS</button>
+      </div>
+    </div>
+  </div>
   <div class="card-box"><h3>TA 的自定义气泡</h3>
     <p style="font-size:11px;color:#bbb;margin:0 0 8px;line-height:1.6">上传 CSS 文件，作用于「${esc(c.name)}」发出的气泡（私聊 + TA 出场的群聊）。CSS 里写 <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px">.bubble</code> 表示气泡本体。</p>
     <textarea id="c-bubble-css" placeholder="直接粘贴你的 CSS 样式表……" style="width:100%;min-height:160px;padding:10px;border:1px solid #eee;border-radius:8px;font-size:12px;font-family:monospace;outline:none;resize:vertical;box-sizing:border-box;background:#fafafa">${esc(c.bubbleCss||'')}</textarea>
@@ -4178,6 +4243,12 @@ document.addEventListener('click', async e=>{
       case 'ls-preset-color': { const c = el.dataset.c; const ci = $('#f-ls-bubble-color'); const ct = $('#f-ls-bubble-color-text'); if(ci) ci.value = c; if(ct) ct.value = c; const contact = db.contacts.find(x=>x.id===ui.editing.id); if(contact){ contact.listenBubbleColor = c; save(); } break; }
       case 'ls-ta-preset-color': { const c = el.dataset.c; const ci = $('#f-ls-ta-bubble-color'); const ct = $('#f-ls-ta-bubble-color-text'); if(ci) ci.value = c; if(ct) ct.value = c; const contact = db.contacts.find(x=>x.id===ui.editing.id); if(contact){ contact.listenTaBubbleColor = c; save(); } break; }
       case 'save-me': saveMe(); break;
+      case 'set-me-bubble-style': db.me.bubbleStyle = el.dataset.style; save(); render(); break;
+      case 'set-contact-bubble-style': { 
+        const c = db.contacts.find(x=>x.id===ui.editing.id); 
+        if(c){ c.bubbleStyle = el.dataset.style; save(); render(); } 
+        break; 
+      }
 
             /* ===== 主题颜色（保存到 draft） ===== */
       case 'set-color-key': { const key = el.dataset.key; const c = el.dataset.c; const A = ui.appearanceDraft || db.appearance; A[key] = c; applyAppearance(); render(); break; }
