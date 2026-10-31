@@ -374,6 +374,7 @@ body{margin:0;height:100vh;height:100dvh;display:flex;flex-direction:column;back
   display: flex; align-items: center; gap: 12px; pointer-events: auto; cursor: pointer;
   transform: translateY(-120%); opacity: 0; transition: all 0.3s cubic-bezier(0.2,0.8,0.2,1);
   border: 1px solid rgba(0,0,0,0.05);
+  touch-action: pan-x;
 }
 .top-notification.show { transform: translateY(0); opacity: 1; }
 .top-notification .tn-avatar {
@@ -594,32 +595,42 @@ function showTopNotification(title, desc, avatar, onClick, type) {
   };
 
   // 【新增功能】添加触摸滑动取消
-  let startY = 0;
+    let startY = 0;
+  let isDragging = false;
+
   div.addEventListener('touchstart', e => {
     startY = e.touches[0].clientY;
     div.style.transition = 'none';
+    isDragging = true;
   }, {passive: true});
   
   div.addEventListener('touchmove', e => {
+    if (!isDragging) return;
     const dy = e.touches[0].clientY - startY;
     if (dy < 0) { // 向上滑动
+      e.preventDefault(); // 加上这句，阻止页面跟着滚动，通知就能顺滑划走
       div.style.transform = `translateY(${dy}px)`;
     }
-  }, {passive: true});
+  }, {passive: false}); // 这里改成 false
   
-   div.addEventListener('touchend', e => {
-    const dy = e.changedTouches[0].clientY - startY;
+  const endSlide = e => {
+    if (!isDragging) return;
+    isDragging = false;
+    const t = (e.changedTouches && e.changedTouches[0]) ? e.changedTouches[0].clientY : startY;
+    const dy = t - startY;
     div.style.transition = 'all 0.3s cubic-bezier(0.2,0.8,0.2,1)';
-    if (dy < -30) { // 上滑超过30px则关闭
+    if (dy < -30) {
       div.style.transform = 'translateY(-120%)';
       div.style.opacity = '0';
-      div.style.pointerEvents = 'none'; // 防止透明后还能点到
+      div.style.pointerEvents = 'none';
       setTimeout(() => { if(div.parentNode) div.remove(); }, 300);
     } else {
       div.style.transform = '';
       div.style.opacity = '';
     }
-  });
+  };
+  div.addEventListener('touchend', endSlide);
+  div.addEventListener('touchcancel', endSlide);
 
   cont.appendChild(div);
   requestAnimationFrame(() => div.classList.add('show'));
@@ -1105,7 +1116,6 @@ function migrate(d){
   if(d.appearance.borderColor === undefined) d.appearance.borderColor = '#F0F0F0';
   if(d.appearance.bgColor === undefined) d.appearance.bgColor = '#FFFFFF';
   if(d.appearance.textColor === undefined) d.appearance.textColor = '#333333';
-  // 删除旧的气泡小挂件字段
   delete d.appearance.bubbleDecorImg;
 
   if(!d.todos) d.todos = {};
@@ -1173,7 +1183,6 @@ function migrate(d){
   d.contacts.forEach(c=>{
     const def = defaultContact();
     Object.keys(def).forEach(k=>{ if(c[k]===undefined) c[k]=def[k]; });
-    // 主动发消息字段兼容
     if(c.activeMsgProb === undefined) c.activeMsgProb = 20;
     if(c.activeMsgMin === undefined) c.activeMsgMin = 30;
     if(c.activeMsgMax === undefined) c.activeMsgMax = 120;
@@ -1183,7 +1192,6 @@ function migrate(d){
     if(c.listenInviteCooldown === undefined) c.listenInviteCooldown = 180;
     if(c.lastListenInviteTime === undefined) c.lastListenInviteTime = 0;
     if(c.lastCoInviteTime === undefined) c.lastCoInviteTime = 0;
-   
     if(c.lastMoodTime === undefined) c.lastMoodTime = 0;
     if(c.unreadCount === undefined) c.unreadCount = 0;
   });
@@ -1200,51 +1208,83 @@ function migrate(d){
     if(Array.isArray(g.members)) g.members.forEach(m=>{
       if(m.imgMin === undefined) m.imgMin = 0;
       if(m.imgMax === undefined) m.imgMax = 99;
-          if(m.atProb === undefined) m.atProb = 5;
+      if(m.atProb === undefined) m.atProb = 5;
     });
     if(g.unreadCount === undefined) g.unreadCount = 0;
   });
+
+  // ====== 修复导入数据的 ID 类型和缺失字段 ======
+  if (Array.isArray(d.contacts)) {
+    d.contacts.forEach(c => { if (c.id) c.id = String(c.id); });
+  }
+  if (Array.isArray(d.groups)) {
+    d.groups.forEach(g => { if (g.id) g.id = String(g.id); });
+  }
+  if (d.chats && typeof d.chats === 'object') {
+    const fixedChats = {};
+    Object.keys(d.chats).forEach(key => {
+      const parts = key.split(':');
+      if (parts.length === 2) {
+        fixedChats[parts[0] + ':' + String(parts[1])] = d.chats[key];
+      } else {
+        fixedChats[key] = d.chats[key];
+      }
+    });
+    d.chats = fixedChats;
+  }
   return d;
 }
-function loadDB(){
-  let d = null;
-  for(const k of [STORE, ...OLD_KEYS]){
-    try{ const raw = localStorage.getItem(k); if(raw){ d = JSON.parse(raw); break; } }catch(e){}
-  }
-  if(!d) d = blankDB();
-  migrate(d);
-  if(!Array.isArray(d.couples) || !d.couples.length) d.couples = [newCouple()];
-  if(!Array.isArray(d.cards)) d.cards = [];
-  if(!d.cards.length){
-    DEFAULT_KAOMOJI.forEach(k=>d.cards.push({id:uid(), groupId:'', ownerId:null, type:'kaomoji', content:k}));
-    DEFAULT_EMOJI.forEach(e=>d.cards.push({id:uid(), groupId:'', ownerId:null, type:'emoji', content:e}));
-  }
-  if(d.daily && d.daily.date !== todayKey()) d.daily = { date: todayKey(), letterCount:{}, momentCount:{}, moodCount:{}, callCount:{}, coInviteCount:{}, listenInviteCount:{} };
-  if(!d.daily.callCount) d.daily.callCount = {};
-  if(!d.daily.coInviteCount) d.daily.coInviteCount = {};
-  if(!d.daily.listenInviteCount) d.daily.listenInviteCount = {};
-  return d;
+
+  let db = null; // 改为全局变量，后续在启动时异步赋值
+
+// 大容量存储 IndexedDB
+let _appDB = null;
+function initAppDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('ZikaAppDB', 1);
+    req.onupgradeneeded = e => {
+      const d = e.target.result;
+      if (!d.objectStoreNames.contains('appData')) d.createObjectStore('appData', { keyPath: 'id' });
+    };
+    req.onsuccess = e => { _appDB = e.target.result; resolve(); };
+    req.onerror = () => reject();
+  });
 }
-const db = loadDB();
+function idbGet(key) {
+  return new Promise((resolve) => {
+    if(!_appDB) return resolve(null);
+    const req = _appDB.transaction('appData', 'readonly').objectStore('appData').get(key);
+    req.onsuccess = () => resolve(req.result ? req.result.value : null);
+    req.onerror = () => resolve(null);
+  });
+}
+function idbSet(key, value) {
+  return new Promise((resolve, reject) => {
+    if(!_appDB) return resolve();
+    const req = _appDB.transaction('appData', 'readwrite').objectStore('appData').put({ id: key, value });
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject();
+  });
+}
 
 let _saveFailShown = false;
 let _saveTimer = null;
 function save(){
   if(_saveTimer) clearTimeout(_saveTimer);
-  _saveTimer = setTimeout(()=>{
-    try{
-      const json = JSON.stringify(db);
-      localStorage.setItem(STORE, json);
-    }catch(e){
-      console.warn('保存失败', e);
-      if(!_saveFailShown){
-        _saveFailShown = true;
-        setTimeout(()=>{
-          showToast('保存失败：浏览器存储空间已满。\n\n新改动不会被保存，但页面还能继续用。本提示本次打开只显示一次。');
-        }, 100);
+  _saveTimer = setTimeout(async ()=>{
+    const json = JSON.stringify(db);
+    try {
+      if(_appDB) await idbSet('main', json);
+      localStorage.setItem(STORE, json); // 兼容小数据
+    } catch(e) {
+      if(e.name === 'QuotaExceededError' && !_appDB){
+        if(!_saveFailShown) {
+          _saveFailShown = true;
+          showToast('保存失败：浏览器存储空间已满。');
+        }
       }
     }
-  }, 2000);
+  }, 1000);
 }
 function resetDailyIfNeeded(){
   if(db.daily.date !== todayKey()){
@@ -1310,39 +1350,46 @@ function renderNav(){
 }
 
 function render(){
-  renderNav();
-  renderCallFloat();
-  const p = $('#panel');
-  if(ui.call && !ui.call.floating){ p.innerHTML = (ui.open?chatView():'') + callModal(); bindCallModal(); return; }
-  if(ui.editing){ p.innerHTML = (ui.editing.type==='contact')?contactForm():(ui.editing.type==='group'?groupForm():''); return; }
-  if(ui.page){
-    const t = ui.page.type;
-    if(t==='couplesEdit') p.innerHTML = couplesEditView();
-    else if(t==='letter') p.innerHTML = letterListView();
-    else if(t==='write') p.innerHTML = writeView();
-    else if(t==='inbox') p.innerHTML = inboxView();
-    else if(t==='mood') p.innerHTML = moodView();
-    else if(t==='moodEdit') p.innerHTML = moodEditView();
-    else if(t==='moments') p.innerHTML = momentsView();
-    else if(t==='momentEdit') p.innerHTML = momentEditView();
-    else if(t==='coStart') p.innerHTML = coStartView();
-    else if(t==='coRead') p.innerHTML = coReadView();
-    else if(t==='coWrite') p.innerHTML = coWriteView();
-    else if(t==='coHistory') p.innerHTML = coHistoryView();
-    else if(t==='coHistoryDetail') p.innerHTML = coHistoryDetailView();
-    else if(t==='musicLibrary') p.innerHTML = musicLibraryView();
-    else if(t==='listen') p.innerHTML = listenView();
-        else if(t==='appearance') { if(!ui.appearanceDraft) ui.appearanceDraft = JSON.parse(JSON.stringify(db.appearance || {})); p.innerHTML = appearanceView(); }
-    else p.innerHTML = '';
-    return;
+  try {
+    renderNav();
+    renderCallFloat();
+    const p = $('#panel');
+    if(ui.call && !ui.call.floating){ p.innerHTML = (ui.open?chatView():'') + callModal(); bindCallModal(); return; }
+    if(ui.editing){ p.innerHTML = (ui.editing.type==='contact')?contactForm():(ui.editing.type==='group'?groupForm():''); return; }
+    if(ui.page){
+      const t = ui.page.type;
+      if(t==='couplesEdit') p.innerHTML = couplesEditView();
+      else if(t==='letter') p.innerHTML = letterListView();
+      else if(t==='write') p.innerHTML = writeView();
+      else if(t==='inbox') p.innerHTML = inboxView();
+      else if(t==='mood') p.innerHTML = moodView();
+      else if(t==='moodEdit') p.innerHTML = moodEditView();
+      else if(t==='moments') p.innerHTML = momentsView();
+      else if(t==='momentEdit') p.innerHTML = momentEditView();
+      else if(t==='coStart') p.innerHTML = coStartView();
+      else if(t==='coRead') p.innerHTML = coReadView();
+      else if(t==='coWrite') p.innerHTML = coWriteView();
+      else if(t==='coHistory') p.innerHTML = coHistoryView();
+      else if(t==='coHistoryDetail') p.innerHTML = coHistoryDetailView();
+      else if(t==='musicLibrary') p.innerHTML = musicLibraryView();
+      else if(t==='listen') p.innerHTML = listenView();
+      else if(t==='appearance') { if(!ui.appearanceDraft) ui.appearanceDraft = JSON.parse(JSON.stringify(db.appearance || {})); p.innerHTML = appearanceView(); }
+      else p.innerHTML = '';
+      return;
+    }
+    if(ui.open){ p.innerHTML = chatView(); scrollBottom(); updateTypingIndicator(); return; }
+      if(ui.tab==='home') p.innerHTML = homeView();
+    else if(ui.tab==='chats') p.innerHTML = chatsView();
+    else if(ui.tab==='cards') p.innerHTML = cardsView();
+    else if(ui.tab==='me') p.innerHTML = meView();
+  } catch(err) {
+    console.error('渲染出错:', err);
+    showToast('页面加载失败: ' + err.message); // 让错误直接弹出来，不让你瞎猜
+    // 发生错误时强制退回聊天列表，防止白屏死机
+    ui.open = null;
+    $('#panel').innerHTML = chatsView();
   }
-  if(ui.open){ p.innerHTML = chatView(); scrollBottom(); updateTypingIndicator(); return; }
-  if(ui.tab==='home') p.innerHTML = homeView();
-  else if(ui.tab==='chats') p.innerHTML = chatsView();
-  else if(ui.tab==='cards') p.innerHTML = cardsView();
-  else if(ui.tab==='me') p.innerHTML = meView();
 }
-
 function scrollBottom(){ const m=$('#msgs'); if(m) m.scrollTop = m.scrollHeight; }
 function avatarHtml(src, name, cls=''){ if(src) return `<img class="${cls}" src="${esc(src)}">`; return `<span class="avatar-txt ${cls}">${esc((name||'?').slice(0,1))}</span>`; }
 function contactUsable(card, contactId){
@@ -2094,64 +2141,114 @@ function updateTypingIndicator(){
 }
 
 /* ====== 聊天页 ====== */
+/* ====== 聊天页 ====== */
 function chatView(){
-  const {type,id} = ui.open;
-  const isGroup = type==='group';
-  const ent = isGroup ? db.groups.find(g=>g.id===id) : db.contacts.find(c=>c.id===id);
-  if(!ent){ ui.open=null; return chatsView(); }
-  const key = type+':'+id;
-  const msgs = db.chats[key]||[];
-  const bgImage = ent.background || (db.appearance?.chatBackground || '');
-  const bg = bgImage ? `background-image:url('${esc(bgImage)}');background-size:cover;background-position:center;` : '';
-  const typingHtml = `<div class="typing-indicator" id="typingIndicator" style="display:none"><span class="ti-name"></span><span class="ti-text">正在回复</span><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
-  let transePanel = '';
-  if(ui.transeMode) {
-    const cards = ui.transeTempGroup;
-    const typeName = ui.transeType === 'tarot' ? '塔罗' : '雷诺曼';
-    transePanel = `<div class="tarot-panel">
-      <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-weight:600; font-size:15px;">🔮 传讯模式 · ${typeName}</span><button class="ghost" style="padding:5px 12px; font-size:12px;" data-action="transe-exit">退出传讯</button></div>
-      <div style="display:flex; gap:8px;"><button style="flex:1; ${ui.transeType==='tarot'?'':'opacity:.45'}" data-action="transe-type" data-t="tarot">塔罗牌</button><button style="flex:1; ${ui.transeType==='lenormand'?'':'opacity:.45'}" data-action="transe-type" data-t="lenormand">雷诺曼</button></div>
-      <div style="font-size:12px; color:#aaa;">当前组已抽 ${cards.length} 张 · 点牌可翻面</div>
-      <div class="tarot-card-row">${cards.map((c,i)=> ui.transeFlipped[i]? `<div class="tarot-card flipped" data-action="transe-flip" data-i="${i}">${esc(c.name)}</div>` : `<div class="tarot-card-back" data-action="transe-flip" data-i="${i}"></div>`).join('')}${cards.length ? '' : '<span style="color:#666; font-size:12px; align-self:center;">点「抽一张」开始</span>'}</div>
-      <div style="display:flex; gap:8px;"><button style="flex:1;" data-action="transe-draw">抽一张</button><button class="ghost" style="flex:1;" data-action="transe-clear" ${cards.length?'':'disabled'}>清空</button></div>
-      <button data-action="transe-send" ${cards.length?'':'disabled'}>✉ 发送到聊天</button>
-    </div>`;
-  }
-  return `
-  <div class="chat">
-    <div class="chat-head">
-      <button class="icon" data-action="back">${ICONS.back}</button>
-      <div class="chat-title">${esc(ent.name)}</div>
-      ${!isGroup?`<button class="icon" data-action="call" data-id="${id}">${ICONS.phone}</button>`:''}
-      <button class="icon" data-action="toggle-transe" data-id="${id}" style="${ui.transeMode?'color:var(--primary)':''}">${ICONS.tarot}</button>
-      <button class="icon" data-action="edit" data-kind="${type}" data-id="${id}">${ICONS.gear}</button>
-    </div>
-    ${transePanel}
-             <div class="msgs" id="msgs" data-chat-key="${key}" style="${bg}">
-     ${msgs.map((m, i) => {
-       let dateDivider = '';
-       const d = new Date(m.t);
-       const curDate = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
-       const prevM = i > 0 ? msgs[i-1] : null;
-       let prevDate = '';
-       if (prevM) {
-         const pd = new Date(prevM.t);
-         prevDate = `${pd.getFullYear()}-${pd.getMonth()+1}-${pd.getDate()}`;
-       }
-       if (curDate !== prevDate) {
-         dateDivider = `<div class="chat-date-divider">${curDate}</div>`;
-       }
-       return dateDivider + msgHtml(m, isGroup, ent);
-     }).join('')}
-      ${msgs.length?'':`<div style="text-align:center;color:#bbb;font-size:13px;margin-top:30px">发一条消息试试</div>`}
-    </div>
-    ${typingHtml}
-    ${chatComposer(isGroup,id)}
-    ${ui.chatSheet?chatSheetView(isGroup,id):''}
-  </div>`;
-}
+  try {
+    const {type,id} = ui.open;
+    const isGroup = type==='group';
+    const safeId = String(id || '');
+    const ent = isGroup ? db.groups.find(g=>String(g.id)===safeId) : db.contacts.find(c=>String(c.id)===safeId);
+    
+    if(!ent){ 
+      ui.open=null; 
+      showToast('未找到该联系人，可能数据已丢失');
+      return chatsView(); 
+    }
+    
+    const key = type+':'+safeId;
+    let rawMsgs = db.chats[key];
+    let msgs = [];
+    
+    // 极度防御：确保聊天记录是数组，且每条消息必须是包含 from 的对象
+    if (Array.isArray(rawMsgs)) {
+      msgs = rawMsgs.filter(m => m && typeof m === 'object' && m.from);
+    } else {
+      db.chats[key] = [];
+    }
 
-function chatComposer(isGroup, contactId){
+    const bgImage = ent.background || (db.appearance?.chatBackground || '');
+    const bg = bgImage ? `background-image:url('${esc(bgImage)}');background-size:cover;background-position:center;` : '';
+    const typingHtml = `<div class="typing-indicator" id="typingIndicator" style="display:none"><span class="ti-name"></span><span class="ti-text">正在回复</span><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+    
+    let transePanel = '';
+    if(ui.transeMode) {
+      const cards = ui.transeTempGroup || [];
+      const typeName = ui.transeType === 'tarot' ? '塔罗' : '雷诺曼';
+      transePanel = `<div class="tarot-panel">
+        <div style="display:flex; justify-content:space-between; align-items:center;"><span style="font-weight:600; font-size:15px;">🔮 传讯模式 · ${typeName}</span><button class="ghost" style="padding:5px 12px; font-size:12px;" data-action="transe-exit">退出传讯</button></div>
+        <div style="display:flex; gap:8px;"><button style="flex:1; ${ui.transeType==='tarot'?'':'opacity:.45'}" data-action="transe-type" data-t="tarot">塔罗牌</button><button style="flex:1; ${ui.transeType==='lenormand'?'':'opacity:.45'}" data-action="transe-type" data-t="lenormand">雷诺曼</button></div>
+        <div style="font-size:12px; color:#aaa;">当前组已抽 ${cards.length} 张 · 点牌可翻面</div>
+        <div class="tarot-card-row">${cards.map((c,i)=> ui.transeFlipped[i]? `<div class="tarot-card flipped" data-action="transe-flip" data-i="${i}">${esc(c.name)}</div>` : `<div class="tarot-card-back" data-action="transe-flip" data-i="${i}"></div>`).join('')}${cards.length ? '' : '<span style="color:#666; font-size:12px; align-self:center;">点「抽一张」开始</span>'}</div>
+        <div style="display:flex; gap:8px;"><button style="flex:1;" data-action="transe-draw">抽一张</button><button class="ghost" style="flex:1;" data-action="transe-clear" ${cards.length?'':'disabled'}>清空</button></div>
+        <button data-action="transe-send" ${cards.length?'':'disabled'}>✉ 发送到聊天</button>
+      </div>`;
+    }
+    
+    return `
+    <div class="chat">
+      <div class="chat-head">
+        <button class="icon" data-action="back">${ICONS.back}</button>
+        <div class="chat-title">${esc(ent.name || '未知')}</div>
+        ${!isGroup?`<button class="icon" data-action="call" data-id="${safeId}">${ICONS.phone}</button>`:''}
+        <button class="icon" data-action="toggle-transe" data-id="${safeId}" style="${ui.transeMode?'color:var(--primary)':''}">${ICONS.tarot}</button>
+        <button class="icon" data-action="edit" data-kind="${type}" data-id="${safeId}">${ICONS.gear}</button>
+      </div>
+      ${transePanel}
+      <div class="msgs" id="msgs" data-chat-key="${key}" style="${bg}">
+       ${msgs.map((m, i) => {
+         let dateDivider = '';
+         let timeVal = Date.now();
+         if (m.t) {
+           const parsed = new Date(m.t).getTime();
+           if (!isNaN(parsed)) timeVal = parsed;
+         }
+         const d = new Date(timeVal);
+         const curDate = `${d.getFullYear()}-${d.getMonth()+1}-${d.getDate()}`;
+         
+         const prevM = i > 0 ? msgs[i-1] : null;
+         let prevDate = '';
+         if (prevM) {
+           let pt = Date.now();
+           if (prevM.t) {
+             const pParsed = new Date(prevM.t).getTime();
+             if (!isNaN(pParsed)) pt = pParsed;
+           }
+           const pd = new Date(pt);
+           prevDate = `${pd.getFullYear()}-${pd.getMonth()+1}-${pd.getDate()}`;
+         }
+         if (curDate !== prevDate) {
+           dateDivider = `<div class="chat-date-divider">${curDate}</div>`;
+         }
+         
+         // 对单条消息进行防御渲染
+         let html = '';
+         try {
+            html = msgHtml(m, isGroup, ent);
+         } catch (err) {
+            console.error("单条消息渲染失败", m, err);
+            html = `<div class="sys-msg" style="color:red;background:#fee;">有一条旧消息数据损坏，已被隐藏<br><small>${err.message}</small></div>`;
+         }
+         return dateDivider + html;
+       }).join('')}
+        ${msgs.length?'':`<div style="text-align:center;color:#bbb;font-size:13px;margin-top:30px">发一条消息试试</div>`}
+      </div>
+      ${typingHtml}
+      ${chatComposer(isGroup,safeId)}
+      ${ui.chatSheet?chatSheetView(isGroup,safeId):''}
+    </div>`;
+  } catch (globalErr) {
+    // 如果 chatView 依然崩溃，直接把报错显示在屏幕上
+    return `<div class="topbar"><button class="icon" data-action="back">${ICONS.back}</button><h1>渲染出错</h1></div>
+            <div class="form">
+              <div class="card-box" style="color:red; word-break:break-all;">
+                <h3>聊天界面加载失败：</h3>
+                <p>${globalErr.message}</p>
+                <p style="font-size:12px;color:#666;">请将此错误发给开发者，或者尝试清空该联系人的聊天记录。</p>
+              </div>
+            </div>`;
+  }
+}
+    function chatComposer(isGroup, contactId){
   const quote = ui.composerQuote;
   return `
   <div class="composer">
@@ -2208,60 +2305,67 @@ function quotePreviewText(q){
 }
 /* ====== 消息渲染 ====== */
 function msgHtml(m,isGroup,ent){
-  if(m.type === 'system'){
-    const isCall = (m.content||'').match(/^(来电|拨打|我拨打)/) || (m.content||'').startsWith('我拨打');
+  if(!m || typeof m !== 'object') return '';
+  
+  const mType = String(m.type || 'text');
+  const mContent = String(m.content || '');
+  const mTime = m.t || Date.now();
+
+  if(mType === 'system'){
+    const isCall = (mContent||'').match(/^(来电|拨打|我拨打)/) || (mContent||'').startsWith('我拨打');
     const iconHtml = isCall ? `<span style="display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;margin-right:5px;flex-shrink:0;vertical-align:middle;">${PHONE_ICON}</span>` : '';
-    return `<div class="sys-msg" style="display:inline-flex;align-items:center;">${iconHtml}${esc(m.content)}</div>`;
+    return `<div class="sys-msg" style="display:inline-flex;align-items:center;">${iconHtml}${esc(mContent)}</div>`;
   }
-  if(m.type === 'co-invite'){
-    const c = db.contacts.find(x=>x.id===m.contactId);
+  if(mType === 'co-invite'){
+    const c = db.contacts.find(x=>String(x.id)===String(m.contactId));
     const status = m.status || 'pending';
     let statusText = '';
     if(status === 'pending') statusText = '等待回应中…';
     else if(status === 'accepted') statusText = '对方接受了你的邀请，开始共读';
     else if(status === 'rejected') statusText = '对方拒绝了共读';
-    return `<div class="co-invite-card"><div class="co-title">你邀请 ${esc(c?.name||'TA')} 共读</div><div class="co-book">《${esc(m.book)}》</div><div class="co-status">${statusText}</div></div>`;
+    return `<div class="co-invite-card"><div class="co-title">你邀请 ${esc(c?.name||'TA')} 共读</div><div class="co-book">《${esc(m.book || '')}》</div><div class="co-status">${statusText}</div></div>`;
   }
-  if(m.type === 'co-invite-in'){
-    const c = db.contacts.find(x=>x.id===m.from);
+  if(mType === 'co-invite-in'){
+    const c = db.contacts.find(x=>String(x.id)===String(m.from));
     const status = m.status || 'pending';
     let inner = '';
     if(status === 'pending'){
-      inner = `<div class="co-status" style="margin-bottom:8px">等你回应…</div><div style="display:flex;gap:8px"><button data-action="co-invite-in-accept" data-id="${m.id}" style="flex:1;padding:9px;border:0;border-radius:10px;background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer">接受</button><button data-action="co-invite-in-reject" data-id="${m.id}" style="flex:1;padding:9px;border:0;border-radius:10px;background:#F5F5F5;color:#666;font-size:13px;font-weight:600;cursor:pointer">拒绝</button></div>`;
+      inner = `<div class="co-status" style="margin-bottom:8px">等你回应…</div><div style="display:flex;gap:8px"><button data-action="co-invite-in-accept" data-id="${m.id || ''}" style="flex:1;padding:9px;border:0;border-radius:10px;background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer">接受</button><button data-action="co-invite-in-reject" data-id="${m.id || ''}" style="flex:1;padding:9px;border:0;border-radius:10px;background:#F5F5F5;color:#666;font-size:13px;font-weight:600;cursor:pointer">拒绝</button></div>`;
     } else if(status === 'accepted') inner = '<div class="co-status">已接受</div>';
     else if(status === 'rejected') inner = '<div class="co-status">已拒绝</div>';
     else inner = '<div class="co-status">邀请已过期</div>';
     return `<div class="co-invite-card"><div class="co-title">${esc(c?.name||'TA')} 邀请你共读</div>${inner}</div>`;
   }
-  if(m.type === 'listen-invite-in'){
-    const c = db.contacts.find(x=>x.id===m.from);
+  if(mType === 'listen-invite-in'){
+    const c = db.contacts.find(x=>String(x.id)===String(m.from));
     const status = m.status || 'pending';
     let inner = '';
     if(status === 'pending'){
-      inner = `<div class="co-status" style="margin-bottom:8px">等你回应…</div><div style="display:flex;gap:8px"><button data-action="listen-invite-in-accept" data-id="${m.id}" style="flex:1;padding:9px;border:0;border-radius:10px;background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer">接受</button><button data-action="listen-invite-in-reject" data-id="${m.id}" style="flex:1;padding:9px;border:0;border-radius:10px;background:#F5F5F5;color:#666;font-size:13px;font-weight:600;cursor:pointer">拒绝</button></div>`;
+      inner = `<div class="co-status" style="margin-bottom:8px">等你回应…</div><div style="display:flex;gap:8px"><button data-action="listen-invite-in-accept" data-id="${m.id || ''}" style="flex:1;padding:9px;border:0;border-radius:10px;background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer">接受</button><button data-action="listen-invite-in-reject" data-id="${m.id || ''}" style="flex:1;padding:9px;border:0;border-radius:10px;background:#F5F5F5;color:#666;font-size:13px;font-weight:600;cursor:pointer">拒绝</button></div>`;
     } else if(status === 'accepted') inner = '<div class="co-status">已接受</div>';
     else if(status === 'rejected') inner = '<div class="co-status">已拒绝</div>';
     else inner = '<div class="co-status">邀请已过期</div>';
     return `<div class="co-invite-card"><div class="co-title">${esc(c?.name||'TA')} 邀请你一起听</div>${inner}</div>`;
   }
 
-  const mine = m.from==='me';
+  const mine = String(m.from) === 'me';
   let name='我', avatar='', color='var(--green)';
+  let c = null;
   if(mine){
-    name = db.me.name; avatar = db.me.avatar; color = db.me.bubbleColor||'#95ec69';
+    name = db.me.name || '我'; avatar = db.me.avatar || ''; color = db.me.bubbleColor||'#95ec69';
     if(isGroup && ent && ent.meBubbleColor) color = ent.meBubbleColor;
   } else {
-    const c = db.contacts.find(x=>x.id===m.from)||ent||{};
+    c = db.contacts.find(x=>String(x.id)===String(m.from))||ent||{};
     name=c.name||'未知'; avatar=c.avatar||''; color=c.bubbleColor||'#ffffff';
   }
 
-   const textColor = isLight(color)?'#111':'#fff';
+  const textColor = isLight(color)?'#111':'#fff';
   const key = ui.open ? (ui.open.type + ':' + ui.open.id) : '';
   const allMsgs = db.chats[key] || [];
-  const isRead = mine && allMsgs.some(x => x.t > m.t && x.from !== 'me' && x.type !== 'system');
+  const isRead = mine && allMsgs.some(x => x && x.t > m.t && String(x.from) !== 'me' && x.type !== 'system');
 
   let bubbleStyle = '';
-  const isCustom = mine ? (db.me.bubbleStyle === 'custom') : (c.bubbleStyle === 'custom');
+    const isCustom = mine ? (db.me.bubbleStyle === 'custom') : (c && c.bubbleStyle === 'custom');
   
   if (isCustom) {
     bubbleStyle = `--bubble-color:${esc(color)};`;
@@ -2269,37 +2373,41 @@ function msgHtml(m,isGroup,ent){
     bubbleStyle = `background:${esc(color)};color:${textColor};`;
   }
 
-  const timeHtml = `<div class="msg-time">${fmtTimeOnly(m.t)}${isRead ? ' <span style="color:#999;font-size:10px;">已读</span>' : ''}</div>`;
+  const timeHtml = `<div class="msg-time">${fmtTimeOnly(mTime)}${isRead ? ' <span style="color:#999;font-size:10px;">已读</span>' : ''}</div>`;
   let quoteBlock = '';
   if(m.quoteId){
-    const q = allMsgs.find(x=>x.id===m.quoteId);
+    const q = allMsgs.find(x=>String(x.id)===String(m.quoteId));
     if(q){
-      const qWho = q.from==='me' ? db.me.name : (db.contacts.find(x=>x.id===q.from)?.name||'未知');
+      const qWho = String(q.from)==='me' ? db.me.name : (db.contacts.find(x=>String(x.id)===String(q.from))?.name||'未知');
       let qPreview = '';
-      if(q.type === 'image') { qPreview = `<img src="${esc(q.content)}" style="max-height:24px;">`; }
+      if(q.type === 'image') { qPreview = `<img src="${esc(q.content||'')}" style="max-height:24px;">`; }
       else { qPreview = esc(q.content || ''); if(qPreview.length > 30) qPreview = qPreview.slice(0,30)+'…'; }
       quoteBlock = `<div class="quote-block">${esc(qWho)}：${qPreview}</div>`;
     }
   }
   let body;
-  if(m.type==='image') body = `<img class="card-img" src="${esc(m.content)}" data-zoom-img="1">`;
-  else if(m.type==='kaomoji') body = `<span class="kaomoji">${esc(m.content)}</span>`;
-  else if(m.type==='emoji') body = `<span class="emoji">${esc(m.content)}</span>`;
-  else body = esc(m.content);
+  if(mType==='image') body = `<img class="card-img" src="${esc(mContent)}" data-zoom-img="1">`;
+  else if(mType==='kaomoji') body = `<span class="kaomoji">${esc(mContent)}</span>`;
+  else if(mType==='emoji') body = `<span class="emoji">${esc(mContent)}</span>`;
+  else body = esc(mContent);
+  
   let imgsBlock = '';
-  if(m.images && m.images.length){ imgsBlock = `<div class="bubble-imgs">${m.images.map(src=>`<img src="${esc(src)}" data-zoom-img="1">`).join('')}</div>`; }
+  const imgsArr = Array.isArray(m.images) ? m.images : [];
+  if(imgsArr.length){ imgsBlock = `<div class="bubble-imgs">${imgsArr.map(src=>`<img src="${esc(src)}" data-zoom-img="1">`).join('')}</div>`; }
+  
   let emotionHtml = '';
-  if(m.emotions && m.emotions.length){
+  const emoArr = Array.isArray(m.emotions) ? m.emotions : [];
+  if(emoArr.length){
     const tagBg = isLight(color) ? 'rgba(0,0,0,0.06)' : 'rgba(255,255,255,0.2)';
     const tagText = isLight(color) ? '#333' : '#fff';
     const tagSub = isLight(color) ? '#888' : 'rgba(255,255,255,0.7)';
     const borderCol = isLight(color) ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.3)';
-    const tags = m.emotions.map(e => `<span style="display:inline-flex;align-items:center;gap:6px;background:${tagBg};border-radius:6px;padding:4px 10px;font-size:12px;"><span style="color:${tagSub};">${esc(e.type)}</span><span style="color:${tagText};font-weight:500;">${esc(e.text)}</span></span>`).join('');
+    const tags = emoArr.map(e => `<span style="display:inline-flex;align-items:center;gap:6px;background:${tagBg};border-radius:6px;padding:4px 10px;font-size:12px;"><span style="color:${tagSub};">${esc(e?.type || '')}</span><span style="color:${tagText};font-weight:500;">${esc(e?.text || '')}</span></span>`).join('');
     emotionHtml = `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed ${borderCol};display:flex;flex-wrap:wrap;gap:8px;">${tags}</div>`;
   }
   const atBadge = m.atMe ? `<span style="font-size:10px;background:var(--primary);color:#fff;border-radius:6px;padding:2px 6px;margin-left:6px;">@你</span>` : '';
   
-  return `<div class="msg ${mine?'mine':''}" data-msg-id="${m.id}">
+  return `<div class="msg ${mine?'mine':''}" data-msg-id="${m.id || ''}">
     <div class="m-avatar">${avatarHtml(avatar,name)}</div>
     <div class="m-body">
       ${isGroup&&!mine?`<div class="m-name">${esc(name)}${atBadge}</div>`:''}
@@ -3495,7 +3603,6 @@ function importCardsFile(file){
   r.readAsText(file);
 }
 function exportBackupFile(){ downloadJSON(JSON.parse(JSON.stringify(db)), `字卡备份-${stamp()}.json`); }
-
 function importBackupFile(file){
   const r = new FileReader();
   r.onload = async ()=>{
@@ -3503,18 +3610,29 @@ function importBackupFile(file){
     try{ data = JSON.parse(r.result); }catch(e){ showToast('导入失败：文件不是有效的 JSON。\n\n' + e.message); return; }
     if(!data || typeof data !== 'object'){ showToast('导入失败'); return; }
     if(!Array.isArray(data.contacts)){ showToast('导入失败：这个文件里没有联系人数据。'); return; }
-    if(!(await showCustomConfirm('导入会覆盖当前所有数据，确定继续吗？'))) return;  try{
-      const merged = blankDB();
-      const allowed = ['me','appearance','couples','contacts','groups','cardGroups','cards','chats','letters','inbox','moods','moments','todos','moodSettings','daily','emotionSettings','emotionGroups','emotionCards','coGroups','coCards','coSettings','coReadHistory','coSession','listenSession','musicGroups'];
-      allowed.forEach(k=>{ if(data[k] !== undefined) merged[k] = data[k]; });
-      migrate(merged);
-      const json = JSON.stringify(merged);
-      try{ [STORE, ...OLD_KEYS].forEach(k => localStorage.removeItem(k)); }catch(e){}
-      localStorage.setItem(STORE, json);
-      Object.keys(db).forEach(k=>delete db[k]);
-      Object.assign(db, merged);
-      showToast('导入成功'); render();
-    } catch(e){ if(e.name === 'QuotaExceededError'){ showToast('导入失败：数据太大'); } else { showToast('导入失败：' + e.message); } }
+    if(!(await showCustomConfirm('导入会覆盖当前所有数据，确定继续吗？'))) return;
+    
+    const merged = blankDB();
+    const allowed = ['me','appearance','couples','contacts','groups','cardGroups','cards','chats','letters','inbox','moods','moments','todos','moodSettings','daily','emotionSettings','emotionGroups','emotionCards','coGroups','coCards','coSettings','coReadHistory','coSession','listenSession','musicGroups'];
+    allowed.forEach(k=>{ if(data[k] !== undefined) merged[k] = data[k]; });
+    migrate(merged);
+    const newJson = JSON.stringify(merged);
+    
+    // 直接存入大仓库 IndexedDB
+    try {
+      if(_appDB) await idbSet('main', newJson);
+      localStorage.setItem(STORE, newJson);
+    } catch(e) {
+      if(e.name === 'QuotaExceededError' && !_appDB) {
+        showToast(`导入失败：浏览器存储满了。`);
+        return;
+      }
+    }
+
+    Object.keys(db).forEach(k=>delete db[k]);
+    Object.assign(db, merged);
+    showToast('导入成功！'); 
+    render();
   };
   r.onerror = ()=>showToast('读取文件失败');
   r.readAsText(file);
@@ -4033,12 +4151,14 @@ function makeCallFloating(){
 /* ---------- 消息推送 / 发送 ---------- */
 function pushMsg(key, from, type, content, quoteId=null, images=[]){
   if(!db.chats[key]) db.chats[key]=[];
-  db.chats[key].push({id:uid(), from, type, content, quoteId, images, t:Date.now()});
+  const m = {id:uid(), from, type, content, quoteId, images, t:Date.now()};
+  db.chats[key].push(m);
   save();
   if(from === 'me' && type !== 'system' && !ui.transeMode && type !== 'co-invite') {
     if(ui.replyTimers[key]) clearTimeout(ui.replyTimers[key]);
     ui.replyTimers[key] = setTimeout(() => { scheduleChatReply(key); }, 1000);
   }
+  return [m]; // 返回数组，方便外部处理
 }
 
 function sendMessage(){
@@ -4047,10 +4167,30 @@ function sendMessage(){
   if(!text && !ui.composerImages.length) return;
   const key = ui.open.type+':'+ui.open.id;
   const quoteId = ui.composerQuote ? ui.composerQuote.id : null;
-  if(text) pushMsg(key, 'me', 'text', text, quoteId, []);
-  if(ui.composerImages.length) pushMsg(key, 'me', 'text', '', quoteId, [...ui.composerImages]);
+  
+  let pushedMsgs = [];
+  if(text) pushedMsgs.push(...pushMsg(key, 'me', 'text', text, quoteId, []));
+  if(ui.composerImages.length) pushedMsgs.push(...pushMsg(key, 'me', 'text', '', quoteId, [...ui.composerImages]));
+  
   ui.composerText = ''; ui.composerImages = []; ui.composerQuote = null;
-  render(); scrollBottom();
+  
+  // 局部更新，不再全局 render 页面
+  inp.value = '';
+  const msgsBox = $('#msgs');
+  if (msgsBox && pushedMsgs.length) {
+    const isGroup = ui.open.type === 'group';
+    const ent = isGroup ? db.groups.find(g=>String(g.id)===String(ui.open.id)) : db.contacts.find(c=>String(c.id)===String(ui.open.id));
+    pushedMsgs.forEach(m => {
+      msgsBox.insertAdjacentHTML('beforeend', msgHtml(m, isGroup, ent));
+    });
+  }
+  
+  // 清理引用和附件框
+  const quoteBar = $('.quote-bar'); if(quoteBar) quoteBar.remove();
+  const imgContainer = $('.composer-images'); if(imgContainer) imgContainer.remove();
+  
+  scrollBottom();
+  updateTypingIndicator();
 }
 
 /* ---------- 情绪标签 ---------- */
@@ -4127,12 +4267,18 @@ document.addEventListener('click', async e=>{
       case 'del-couple': if(db.couples.length<=1){ showToast('至少一组'); break; } if(await showCustomConfirm('删除这一组？')){ db.couples=db.couples.filter(x=>x.id!==id); save(); render(); } break;
       case 'page': { const pageType = el.dataset.p; ui.page = {type: pageType}; ui.open = null; ui.editing = null; resetSwipe(); if(pageType === 'mood') ui.moodViewDate = todayKey(); if(pageType === 'coHistory') ui.coHistoryQuery = ''; render(); break; }
       case 'toggle-add': ui.addMenuOpen = !ui.addMenuOpen; render(); break;
-          case 'open-chat': 
-        ui.open={type:el.dataset.type, id}; 
-        if(el.dataset.type === 'contact') { const c = db.contacts.find(x=>x.id===id); if(c) c.unreadCount=0; }
-        else { const g = db.groups.find(x=>x.id===id); if(g) g.unreadCount=0; }
+             case 'open-chat': {
+        const safeId = String(id || '');
+        ui.open = {type: el.dataset.type, id: safeId}; 
+        if(el.dataset.type === 'contact') { 
+          const c = db.contacts.find(x=>String(x.id) === safeId); 
+          if(c) c.unreadCount=0; 
+        } else { 
+          const g = db.groups.find(x=>String(x.id) === safeId); 
+          if(g) g.unreadCount=0; 
+        }
         ui.chatSheet=null; ui.composerText=''; ui.composerImages=[]; ui.composerQuote=null; ui.batchList=[]; ui.addMenuOpen=false; ui.tarotEditingId=null; ui.typing=null; render(); break;
-      case 'back': ui.open=null; ui.chatSheet=null; ui.tarotEditingId=null; ui.typing=null; render(); break;
+      }
       case 'open-letter': ui.letterModalId = id; render(); break;
       case 'close-letter-modal': if (e.target.classList.contains('letter-modal-mask') || e.target.closest('.letter-modal-actions')) { ui.letterModalId = null; const mask1 = document.querySelector('.letter-modal-mask'); if(mask1 && !ui.coInviteModal && !ui.coBookPrompt) mask1.remove(); } break;
       case 'del-letter-modal': { if(!(await showCustomConfirm('删除这封信？'))) break; db.letters = db.letters.filter(x=>x.id!==id); db.inbox = db.inbox.filter(x=>x.id!==id); save(); ui.letterModalId = null; const mask2 = document.querySelector('.letter-modal-mask'); if(mask2) mask2.remove(); render(); break; }
@@ -4231,7 +4377,12 @@ document.addEventListener('click', async e=>{
       case 'new-contact': ui.editing={type:'contact', id:null}; ui.open=null; ui.page=null; ui.contactTab='basic'; ui.addMenuOpen=false; render(); break;
       case 'new-group': ui.editing={type:'group', id:null}; ui.open=null; ui.page=null; ui.addMenuOpen=false; render(); break;
       case 'edit': ui.editing={type:el.dataset.kind, id}; ui.open=null; ui.page=null; ui.contactTab='basic'; render(); break;
-          case 'cancel': if(ui.call) endCall(); else if(ui.page){ if(ui.page.type==='appearance') ui.appearanceDraft = null; ui.page=null; } else if(ui.editing){ ui.editing=null; ui.draftKey=''; } else if(ui.open) ui.open=null; applyAppearance(); render(); break;
+                case 'back':
+        ui.open = null;
+        ui.chatSheet = null;
+        render();
+        break;
+case 'cancel': if(ui.call) endCall(); else if(ui.page){ if(ui.page.type==='appearance') ui.appearanceDraft = null; ui.page=null; } else if(ui.editing){ ui.editing=null; ui.draftKey=''; } else if(ui.open) ui.open=null; applyAppearance(); render(); break;
       case 'ctab': ui.contactTab = el.dataset.k; render(); break;
       case 'save-contact': saveContact(id||null); break;
       case 'save-all': saveContactToAll(id); break;
@@ -4815,26 +4966,58 @@ msgHtml = function(m, isGroup, ent) {
 };
 
 /* ================= 启动 ================= */
-render();
-setInterval(tickBackground, 20000);
+(async function boot(){
+  await initAppDB();
+  const idbRaw = await idbGet('main');
+  let parsedDb = null;
 
-// 启动开屏动画
-(function initSplash() {
-  const html = `
-    <div id="splashScreen">
-      <div class="splash-card">
-        <div class="splash-title">WELCOME</div>
-        <div class="splash-name">${esc(db.me.name || 'your name')}</div>
-        <button class="splash-btn">Enter</button>
+  // 尝试从大仓库读取
+  if(idbRaw) {
+    try { parsedDb = JSON.parse(idbRaw); } catch(e){}
+  }
+
+  // 如果大仓库没数据，从旧的 localStorage 迁移
+  if(!parsedDb) {
+    let d = null;
+    for(const k of [STORE, ...OLD_KEYS]){
+      try{ const raw = localStorage.getItem(k); if(raw){ d = JSON.parse(raw); break; } }catch(e){}
+    }
+    if(!d) d = blankDB();
+    parsedDb = d;
+    await idbSet('main', JSON.stringify(parsedDb));
+  }
+
+  db = parsedDb;
+  migrate(db);
+  if(!Array.isArray(db.couples) || !db.couples.length) db.couples = [newCouple()];
+  if(!Array.isArray(db.cards)) db.cards = [];
+  if(!db.cards.length){
+    DEFAULT_KAOMOJI.forEach(k=>db.cards.push({id:uid(), groupId:'', ownerId:null, type:'kaomoji', content:k}));
+    DEFAULT_EMOJI.forEach(e=>db.cards.push({id:uid(), groupId:'', ownerId:null, type:'emoji', content:e}));
+  }
+  if(db.daily && db.daily.date !== todayKey()) db.daily = { date: todayKey(), letterCount:{}, momentCount:{}, moodCount:{}, callCount:{}, coInviteCount:{}, listenInviteCount:{} };
+
+  render();
+  setInterval(tickBackground, 20000);
+
+  // 启动开屏动画
+  (function initSplash() {
+    const html = `
+      <div id="splashScreen">
+        <div class="splash-card">
+          <div class="splash-title">WELCOME</div>
+          <div class="splash-name">${esc(db.me.name || 'your name')}</div>
+          <button class="splash-btn">Enter</button>
+        </div>
       </div>
-    </div>
-  `;
-  document.body.insertAdjacentHTML('beforeend', html);
-  document.querySelector('.splash-btn').onclick = () => {
-    const splash = document.getElementById('splashScreen');
-    splash.classList.add('hide');
-    setTimeout(() => splash.remove(), 600);
-  };
+    `;
+    document.body.insertAdjacentHTML('beforeend', html);
+    document.querySelector('.splash-btn').onclick = () => {
+      const splash = document.getElementById('splashScreen');
+      splash.classList.add('hide');
+      setTimeout(() => splash.remove(), 600);
+    };
+  })();
 })();
 </script>
 </body>
